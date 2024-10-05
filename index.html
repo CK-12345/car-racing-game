@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Car Racing Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #gameCanvas { width: 100vw; height: 100vh; display: block; }
+        .hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            font-size: 20px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div class="hud">
+        <span id="lapCount">Lap: 1 / 3</span><br/>
+        <span id="speed">Speed: 0 km/h</span><br/>
+        <span id="boost">Boost: Available</span>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+
+    <script>
+        // Basic game setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas') });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        
+        // Night Mode toggle (you can set this to true for night mode)
+        const nightMode = true;
+
+        // Lighting setup
+        const ambientLight = new THREE.AmbientLight(nightMode ? 0x222222 : 0xffffff, 0.5);
+        scene.add(ambientLight);
+        const pointLight = new THREE.PointLight(0xffffff, 1, 50);
+        pointLight.position.set(0, 10, 0);
+        scene.add(pointLight);
+
+        if (nightMode) {
+            // Headlight for night mode
+            const headlight = new THREE.PointLight(0xffffff, 1, 100);
+            headlight.position.set(0, 2, 5);
+            scene.add(headlight);
+        }
+
+        // Car setup
+        const carGeometry = new THREE.BoxGeometry(1, 0.5, 2);
+        const carMaterial = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+        const car = new THREE.Mesh(carGeometry, carMaterial);
+        car.castShadow = true;
+        scene.add(car);
+
+        // Track setup with elevation changes (hills, valleys)
+        const trackGeometry = new THREE.PlaneGeometry(500, 500, 32, 32);
+        const trackMaterial = new THREE.MeshStandardMaterial({ color: nightMode ? 0x111111 : 0x333333 });
+        const track = new THREE.Mesh(trackGeometry, trackMaterial);
+        track.rotation.x = -Math.PI / 2;
+        track.receiveShadow = true;
+
+        // Add elevation to track (modifying vertices)
+        for (let i = 0; i < trackGeometry.vertices.length; i++) {
+            trackGeometry.vertices[i].z = Math.sin(i * 0.5) * 2;  // Create gentle hills and valleys
+        }
+        trackGeometry.verticesNeedUpdate = true;  // Ensure elevation changes are applied
+        scene.add(track);
+
+        // Boost pad setup
+        const boostPadGeometry = new THREE.BoxGeometry(2, 0.1, 5);
+        const boostPadMaterial = new THREE.MeshStandardMaterial({ color: 0xffff00 });
+        const boostPad = new THREE.Mesh(boostPadGeometry, boostPadMaterial);
+        boostPad.position.set(0, 0.1, 20);  // Place boost pad on the track
+        scene.add(boostPad);
+
+        // Rain particle system (for rainy weather effect)
+        const rainParticles = [];
+        const rainMaterial = new THREE.PointsMaterial({ color: 0x888888, size: 0.1 });
+        const rainGeometry = new THREE.BufferGeometry();
+        for (let i = 0; i < 1000; i++) {
+            const particle = new THREE.Vector3(
+                (Math.random() - 0.5) * 50,
+                Math.random() * 20,
+                (Math.random() - 0.5) * 50
+            );
+            rainParticles.push(particle);
+        }
+        rainGeometry.setFromPoints(rainParticles);
+        const rain = new THREE.Points(rainGeometry, rainMaterial);
+        scene.add(rain);
+
+        // Physics setup
+        const world = new CANNON.World();
+        world.gravity.set(0, -9.82, 0);
+
+        const carBody = new CANNON.Body({
+            mass: 1,
+            position: new CANNON.Vec3(0, 1, 0),
+            shape: new CANNON.Box(new CANNON.Vec3(0.5, 0.25, 1))
+        });
+        world.addBody(carBody);
+
+        // Controls and gameplay
+        let speed = 0;
+        let maxSpeed = 10;
+        let acceleration = 0.1;
+        let lapCount = 1;
+        let maxLaps = 3;
+        let boostAvailable = true;
+        let isOnBoostPad = false;
+
+        // Event listener for car controls
+        window.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowUp') {
+                speed = Math.min(speed + acceleration, maxSpeed);  // Accelerate
+            } else if (event.key === 'ArrowDown') {
+                speed = Math.max(speed - acceleration, 0);  // Brake
+            } else if (event.key === 'ArrowLeft') {
+                carBody.angularVelocity.y = -1;  // Steer left
+            } else if (event.key === 'ArrowRight') {
+                carBody.angularVelocity.y = 1;  // Steer right
+            } else if (event.key === 'Space' && boostAvailable) {
+                speed = maxSpeed * 1.5;  // Boost speed
+                boostAvailable = false;  // Use boost
+                document.getElementById('boost').textContent = "Boost: Used";
+            }
+        });
+
+        // Boost pad logic
+        function checkBoostPad() {
+            if (car.position.distanceTo(boostPad.position) < 2 && !isOnBoostPad) {
+                speed = maxSpeed * 2;  // Boost when driving over the pad
+                isOnBoostPad = true;  // Prevent repeat boosting
+            } else if (car.position.distanceTo(boostPad.position) >= 2) {
+                isOnBoostPad = false;
+            }
+        }
+
+        // Track lap system
+        function updateLapSystem() {
+            if (carBody.position.z > 200) {
+                lapCount += 1;
+                if (lapCount <= maxLaps) {
+                    document.getElementById('lapCount').textContent = `Lap: ${lapCount} / ${maxLaps}`;
+                    carBody.position.set(0, 1, 0);  // Reset car to start
+                    speed = 0;  // Reset speed
+                    boostAvailable = true;  // Reset boost
+                    document.getElementById('boost').textContent = "Boost: Available";
+                } else {
+                    alert("Race Finished!");
+                }
+            }
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+            world.step(1 / 60);
+
+            // Update car position and speed
+            car.position.copy(carBody.position);
+            car.quaternion.copy(carBody.quaternion);
+            carBody.velocity.z = -speed;
+
+            // Update HUD with speed
+            document.getElementById('speed').textContent = `Speed: ${Math.floor(speed * 10)} km/h`;
+
+            // Rain particles falling
+            for (let i = 0; i < rainParticles.length; i++) {
+                rainParticles[i].y -= 0.2;  // Simulate rain falling
+                if (rainParticles[i].y < 0) {
+                    rainParticles[i].y = 20;  // Reset to the top
+                }
+            }
+            rainGeometry.setFromPoints(rainParticles);
+
+            // Boost pad check
+            checkBoostPad();
+
+            // Update lap system
+            updateLapSystem();
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+    </script>
+</body>
+</html>
